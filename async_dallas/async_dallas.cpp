@@ -1,95 +1,68 @@
-#include "async_dallas.h"
-#include "esphome/core/log.h"
-
-namespace esphome {
-namespace async_dallas {
-
-static const char *TAG = "async_dallas";
-
-AsyncDallasSensor::AsyncDallasSensor(uint8_t pin, uint32_t interval) 
-    : PollingComponent(interval), pin_(pin) {}
-
-void AsyncDallasSensor::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Async Dallas on Pin %u...", pin_);
-  
-  // 1. Initialize Driver
-  one_wire_ = new OneWire(pin_);
-  sensors_ = new DallasTemperature(one_wire_);
-  sensors_->begin();
-  
-  // 2. RIGID: Disable blocking wait in the library.
-  sensors_->setWaitForConversion(false); 
-
-  // 3. Create Mutex
-  result_mutex_ = xSemaphoreCreateMutex();
-
-  // 4. Spawn Worker on CORE 0 (Pro Core)
-  BaseType_t res = xTaskCreatePinnedToCore(
-      this->task_worker, "dallas_0", 4096, this, 1, &task_handle_, 0
-  );
-
-  if (res != pdPASS) {
-    ESP_LOGE(TAG, "CRITICAL FAILURE: Could not spawn worker task on Core 0");
-    this->mark_failed();
-  }
-}
-
-void AsyncDallasSensor::dump_config() {
-  LOG_SENSOR("", "Async Dallas Sensor", this);
-  ESP_LOGCONFIG(TAG, "  Pin: %u", pin_);
-  ESP_LOGCONFIG(TAG, "  Architecture: Dual-Core (Worker Pinned to Core 0)");
-}
-
-void AsyncDallasSensor::update() {
-  // Triggered by Main Loop (Core 1)
-  if (!request_pending_) {
-    request_pending_ = true;
-    xTaskNotifyGive(task_handle_); // Wake up Core 0
-  }
-}
-
 void AsyncDallasSensor::task_worker(void *pvParameters) {
   AsyncDallasSensor *this_sensor = (AsyncDallasSensor *)pvParameters;
+  
+  // Track consecutive failures
+  uint8_t error_count = 0;
+  
+  // RIGID: 10 failures is the "Debounce" threshold.
+  // At 1s intervals, this tolerates a 10s "Noise Storm" (e.g., VFD ramp-up)
+  // without triggering a reset. We only reset if the sensor stays dead AFTER the storm.
+  const uint8_t MAX_ERRORS = 10;
 
   for (;;) {
-    // Sleep until notified (0% CPU)
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // --- HEAVY LIFTING START (Core 0) ---
+    // --- WORKER LOGIC ---
+
+    // 1. DOCTOR: Check if the sensor is "Latched"
+    if (error_count >= MAX_ERRORS) {
+        ESP_LOGW(TAG, "Pin %u: Bus Latch-Up detected (10 failures). Performing Hard Reset...", this_sensor->pin_);
+        
+        // A. Teardown: Clear Software State
+        delete this_sensor->sensors_;
+        delete this_sensor->one_wire_;
+        
+        // B. Physical Flush: Drain the line capacitance
+        pinMode(this_sensor->pin_, OUTPUT);
+        digitalWrite(this_sensor->pin_, LOW);
+        vTaskDelay(10 / portTICK_PERIOD_MS); // 10ms "Slap"
+        digitalWrite(this_sensor->pin_, HIGH);
+        pinMode(this_sensor->pin_, INPUT);
+        
+        // C. Rebuild: Re-init Driver
+        this_sensor->one_wire_ = new OneWire(this_sensor->pin_);
+        this_sensor->sensors_ = new DallasTemperature(this_sensor->one_wire_);
+        this_sensor->sensors_->begin();
+        this_sensor->sensors_->setWaitForConversion(false);
+        
+        error_count = 0; // Reset counter
+    }
+
+    // 2. Request Temp
     this_sensor->sensors_->requestTemperatures();
     
-    // Non-blocking wait (Yields Core 0 to WiFi/System)
+    // Yield (750ms)
     vTaskDelay(750 / portTICK_PERIOD_MS); 
 
-    // Read result
+    // 3. Read Temp
     float temp = this_sensor->sensors_->getTempCByIndex(0);
 
-    // Save result thread-safely
-    if (xSemaphoreTake(this_sensor->result_mutex_, 10) == pdTRUE) {
+    // 4. Validate Signal Health
+    // -127 = Disconnected, 85 = Power-On Reset
+    if (temp <= -100 || temp == 85.0) {
+        error_count++;
+    } else {
+        if (error_count > 0) {
+             // If we recovered naturally, it was just transient noise.
+             ESP_LOGI(TAG, "Pin %u: Signal recovered (Transient Noise).", this_sensor->pin_);
+        }
+        error_count = 0;
+    }
+
+    // 5. Deliver Result
+    if (xSemaphoreTake(this_sensor->result_mutex_, portMAX_DELAY) == pdTRUE) {
       this_sensor->latest_temp_ = temp;
       xSemaphoreGive(this_sensor->result_mutex_);
     }
-    // --- HEAVY LIFTING END ---
   }
 }
-
-void AsyncDallasSensor::loop() {
-  // Collector (Core 1)
-  float new_val = NAN;
-  
-  if (xSemaphoreTake(result_mutex_, 0) == pdTRUE) { 
-    if (!isnan(latest_temp_)) {
-        new_val = latest_temp_;
-        latest_temp_ = NAN; // Clear it
-    }
-    xSemaphoreGive(result_mutex_);
-  }
-
-  if (!isnan(new_val) && new_val > -55 && new_val < 125) {
-    publish_state(new_val);
-    request_pending_ = false;
-  }
-}
-
-} // namespace async_dallas
-} // namespace esphome
