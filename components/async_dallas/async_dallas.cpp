@@ -7,94 +7,101 @@ namespace async_dallas {
 
 static const char *TAG = "async_dallas";
 
-void AsyncDallasSensor::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Nuclear-Hard Dallas on Pin %u...", pin_);
+// ============================================================================
+// AsyncDallasComponent (HUB)
+// ============================================================================
+
+void AsyncDallasComponent::setup() {
+  uint8_t pin_num = pin_->get_pin();
+  ESP_LOGCONFIG(TAG, "Setting up Async Dallas Hub on Pin %u...", pin_num);
   
-  // ESP32-S3 GPIO initialization - CRITICAL for external OneWire library
-  pinMode(pin_, INPUT_PULLUP);
+  // ESP32-S3 GPIO initialization
+  pinMode(pin_num, INPUT_PULLUP);
   delay(50);
   
-  // 1. ALLOCATE MEMORY
-  one_wire_ = new (std::nothrow) OneWire(pin_);
+  // Allocate OneWire
+  one_wire_ = new (std::nothrow) OneWire(pin_num);
   if (!one_wire_) {
-      ESP_LOGE(TAG, "FATAL: Heap Exhaustion (OneWire).");
-      this->mark_failed();
-      return;
+    ESP_LOGE(TAG, "FATAL: Heap Exhaustion (OneWire).");
+    this->mark_failed();
+    return;
   }
 
   delay(100);
 
+  // Allocate DallasTemperature
   sensors_ = new (std::nothrow) DallasTemperature(one_wire_);
   if (!sensors_) {
-      ESP_LOGE(TAG, "FATAL: Heap Exhaustion (DallasTemp).");
-      this->mark_failed();
-      return;
+    ESP_LOGE(TAG, "FATAL: Heap Exhaustion (DallasTemp).");
+    this->mark_failed();
+    return;
   }
 
-  // 2. INITIALIZE HARDWARE
+  // Initialize hardware
   sensors_->begin();
-  
-  // 3. SET RESOLUTION
-  sensors_->setResolution(12);
-  sensors_->setWaitForConversion(false); 
+  sensors_->setWaitForConversion(false);
 
-  uint8_t current_res = sensors_->getResolution();
-  if (current_res != 12) {
-      ESP_LOGW(TAG, "SETUP WARNING: Sensor on Pin %u stuck at %d-bit! CHECK POWER.", pin_, current_res);
-  } else {
-      ESP_LOGI(TAG, "Pin %u: Configured for 12-bit resolution.", pin_);
-  }
-
-  // 4. VERIFY TOPOLOGY
+  // Discover devices and set resolution
   uint8_t device_count = sensors_->getDeviceCount();
-  if (device_count == 0) {
-      ESP_LOGW(TAG, "SETUP WARNING: No sensors found on Pin %u!", pin_);
-  } else if (device_count > 1) {
-      ESP_LOGE(TAG, "FATAL: Multiple sensors (%d) on Pin %u! This component requires 1 sensor per pin.", device_count, pin_);
-      this->mark_failed();
-      return;
-  } else {
-      // LOG ADDRESS
-      DeviceAddress device_addr;
-      if (sensors_->getAddress(device_addr, 0)) {
-          char addr_str[24];
-          snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
-              device_addr[0], device_addr[1], device_addr[2], device_addr[3],
-              device_addr[4], device_addr[5], device_addr[6], device_addr[7]);
-          ESP_LOGI(TAG, "Found Sensor on Pin %u. Address: %s", pin_, addr_str);
+  ESP_LOGI(TAG, "Found %d device(s) on Pin %u", device_count, pin_num);
+  
+  for (uint8_t i = 0; i < device_count; i++) {
+    DeviceAddress device_addr;
+    if (sensors_->getAddress(device_addr, i)) {
+      uint64_t addr = 0;
+      for (uint8_t j = 0; j < 8; j++) {
+        addr |= ((uint64_t)device_addr[j]) << (j * 8);
       }
+      
+      char addr_str[24];
+      snprintf(addr_str, sizeof(addr_str), "0x%02X%02X%02X%02X%02X%02X%02X%02X",
+        device_addr[7], device_addr[6], device_addr[5], device_addr[4],
+        device_addr[3], device_addr[2], device_addr[1], device_addr[0]);
+      
+      ESP_LOGI(TAG, "  Device %d: %s", i, addr_str);
+      temp_cache_[addr] = NAN;  // Initialize cache
+    }
   }
 
-  // 5. SAFE THREADING
+  // Create mutex
   result_mutex_ = xSemaphoreCreateMutex();
   if (result_mutex_ == NULL) {
-      ESP_LOGE(TAG, "FATAL: Mutex creation failed.");
-      this->mark_failed();
-      return;
+    ESP_LOGE(TAG, "FATAL: Mutex creation failed.");
+    this->mark_failed();
+    return;
   }
 
+  // Create FreeRTOS task
   BaseType_t res;
   #if portNUM_PROCESSORS > 1
-      res = xTaskCreatePinnedToCore(this->task_worker, "dallas_0", 8192, this, 1, &task_handle_, 0);
+    res = xTaskCreatePinnedToCore(this->task_worker, "dallas_hub", 8192, this, 1, &task_handle_, 0);
   #else
-      res = xTaskCreate(this->task_worker, "dallas_w", 8192, this, 1, &task_handle_);
+    res = xTaskCreate(this->task_worker, "dallas_hub", 8192, this, 1, &task_handle_);
   #endif
 
   if (res != pdPASS) {
     ESP_LOGE(TAG, "FATAL: Worker Task creation failed.");
     this->mark_failed();
+  } else {
+    ESP_LOGI(TAG, "Async Dallas Hub initialized successfully");
   }
 }
 
-void AsyncDallasSensor::dump_config() {
-  LOG_SENSOR("", "Async Dallas Sensor", this);
-  ESP_LOGCONFIG(TAG, "  Pin: %u", pin_);
-  ESP_LOGCONFIG(TAG, "  Mode: Nuclear-Hard (Static Alloc + Forensics)");
+void AsyncDallasComponent::dump_config() {
+  uint8_t pin_num = pin_->get_pin();
+  ESP_LOGCONFIG(TAG, "Async Dallas Hub:");
+  ESP_LOGCONFIG(TAG, "  Pin: %u", pin_num);
+  ESP_LOGCONFIG(TAG, "  Update Interval: %.1fs", this->get_update_interval() / 1000.0f);
+  ESP_LOGCONFIG(TAG, "  Sensors: %d", sensors_list_.size());
 }
 
-void AsyncDallasSensor::update() {
+void AsyncDallasComponent::register_sensor(AsyncDallasSensor *sensor) {
+  sensors_list_.push_back(sensor);
+}
+
+void AsyncDallasComponent::update() {
   if (this->is_failed() || task_handle_ == nullptr) {
-      return;
+    return;
   }
 
   if (!request_pending_) {
@@ -103,96 +110,123 @@ void AsyncDallasSensor::update() {
   }
 }
 
-void AsyncDallasSensor::task_worker(void *pvParameters) {
-  AsyncDallasSensor *this_sensor = (AsyncDallasSensor *)pvParameters;
-  
-  uint8_t error_count = 0;
+void AsyncDallasComponent::task_worker(void *pvParameters) {
+  AsyncDallasComponent *hub = (AsyncDallasComponent *)pvParameters;
   const uint8_t MAX_ERRORS = 10;
   bool just_reset = false;
 
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // --- 1. THE DOCTOR: Safe Bus Recovery ---
-    if (error_count >= MAX_ERRORS) {
-        ESP_LOGW(TAG, "Pin %u: Bus Critical (10x Fail). Resetting Driver...", this_sensor->pin_);
-        
-        this_sensor->sensors_->begin();
-        this_sensor->sensors_->setResolution(12); 
-        this_sensor->sensors_->setWaitForConversion(false);
-        
-        error_count = 0;
-        just_reset = true;
+    // Bus recovery if needed
+    if (hub->error_count_ >= MAX_ERRORS) {
+      uint8_t pin_num = hub->pin_->get_pin();
+      ESP_LOGW(TAG, "Pin %u: Bus Critical (10x Fail). Resetting Driver...", pin_num);
+      
+      hub->sensors_->begin();
+      hub->sensors_->setWaitForConversion(false);
+      
+      hub->error_count_ = 0;
+      just_reset = true;
     }
 
-    // --- 2. THE WORK (Async) ---
-    this_sensor->sensors_->requestTemperatures();
-    
-    vTaskDelay(750 / portTICK_PERIOD_MS); 
-    
-    float temp = this_sensor->sensors_->getTempCByIndex(0);
+    // Request temperatures from all sensors
+    hub->sensors_->requestTemperatures();
+    vTaskDelay(750 / portTICK_PERIOD_MS);
 
-    // --- 3. FORENSIC DIAGNOSTICS ---
-    if (temp < -50 || temp > 125) { 
-        error_count++;
-        
-        if (temp <= -100) {
-            if (this_sensor->sensors_->getDS18Count() == 0) {
-                 ESP_LOGD(TAG, "Pin %u Error: PHYSICAL DISCONNECT (No sensors found).", this_sensor->pin_);
+    // Read all sensors and update cache
+    if (xSemaphoreTake(hub->result_mutex_, portMAX_DELAY) == pdTRUE) {
+      uint8_t device_count = hub->sensors_->getDeviceCount();
+      
+      for (uint8_t i = 0; i < device_count; i++) {
+        DeviceAddress device_addr;
+        if (hub->sensors_->getAddress(device_addr, i)) {
+          uint64_t addr = 0;
+          for (uint8_t j = 0; j < 8; j++) {
+            addr |= ((uint64_t)device_addr[j]) << (j * 8);
+          }
+          
+          float temp = hub->sensors_->getTempC(device_addr);
+          
+          if (temp < -50 || temp > 125) {
+            hub->error_count_++;
+            if (hub->sensors_->getDS18Count() == 0) {
+              ESP_LOGD(TAG, "Device %d: PHYSICAL DISCONNECT", i);
             } else {
-                 ESP_LOGD(TAG, "Pin %u Error: CRC/NOISE (Sensor present, data corrupted). Check 3.3V/Cable.", this_sensor->pin_);
+              ESP_LOGD(TAG, "Device %d: CRC/NOISE (temp=%.2f)", i, temp);
             }
-        } else {
-             ESP_LOGD(TAG, "Pin %u Error: OUT OF RANGE. Value: %.2f", this_sensor->pin_, temp);
+          } else {
+            if (hub->error_count_ > 0) {
+              ESP_LOGI(TAG, "Device %d: Signal recovered after %d errors", i, hub->error_count_);
+            }
+            hub->error_count_ = 0;
+          }
+          
+          if (!just_reset) {
+            hub->temp_cache_[addr] = temp;
+          }
         }
-
-    } else {
-        if (error_count > 0) {
-             ESP_LOGI(TAG, "Pin %u: Signal recovered after %d errors.", this_sensor->pin_, error_count);
-        }
-        error_count = 0;
+      }
+      
+      xSemaphoreGive(hub->result_mutex_);
     }
 
-    // --- 4. DELIVERY ---
-    if (this_sensor->is_failed()) {
-        vTaskDelete(NULL); 
-    }
-
-    if (just_reset) {
-        just_reset = false; 
-    } else {
-        if (xSemaphoreTake(this_sensor->result_mutex_, portMAX_DELAY) == pdTRUE) {
-          this_sensor->latest_temp_ = temp;
-          xSemaphoreGive(this_sensor->result_mutex_);
-        }
+    just_reset = false;
+    
+    if (hub->is_failed()) {
+      vTaskDelete(NULL);
     }
   }
 }
 
-void AsyncDallasSensor::loop() {
+void AsyncDallasComponent::loop() {
   if (this->is_failed()) return;
 
-  float new_val = NAN;
-  bool received_data = false;
+  // Trigger sensor updates
+  for (auto *sensor : sensors_list_) {
+    sensor->update();
+  }
   
-  if (result_mutex_ != NULL && xSemaphoreTake(result_mutex_, 0) == pdTRUE) { 
-    if (!isnan(latest_temp_)) {
-        new_val = latest_temp_;
-        latest_temp_ = NAN;
-        received_data = true;
+  request_pending_ = false;
+}
+
+float AsyncDallasComponent::get_temperature_c(uint64_t address) {
+  float result = NAN;
+  
+  if (result_mutex_ != NULL && xSemaphoreTake(result_mutex_, 0) == pdTRUE) {
+    auto it = temp_cache_.find(address);
+    if (it != temp_cache_.end()) {
+      result = it->second;
     }
     xSemaphoreGive(result_mutex_);
   }
+  
+  return result;
+}
 
-  if (received_data) {
-    if (new_val < -50 || new_val > 125) {
-        ESP_LOGW(TAG, "Invalid reading on Pin %u: %.2f", pin_, new_val);
-        publish_state(NAN); 
-    } else {
-        publish_state(new_val);
-    }
-    request_pending_ = false; 
+// ============================================================================
+// AsyncDallasSensor (Individual Sensor)
+// ============================================================================
+
+void AsyncDallasSensor::update() {
+  float temp = parent_->get_temperature_c(address_);
+  
+  if (temp < -50 || temp > 125) {
+    ESP_LOGW(TAG, "'%s': Invalid reading %.2f°C", this->get_name().c_str(), temp);
+    this->publish_state(NAN);
+  } else {
+    this->publish_state(temp);
   }
+}
+
+void AsyncDallasSensor::dump_config() {
+  LOG_SENSOR("", "Async Dallas Sensor", this);
+  if (has_address_) {
+    ESP_LOGCONFIG(TAG, "  Address: 0x%016llX", address_);
+  } else {
+    ESP_LOGCONFIG(TAG, "  Index: %d", index_);
+  }
+  ESP_LOGCONFIG(TAG, "  Resolution: %d bits", resolution_);
 }
 
 } // namespace async_dallas
