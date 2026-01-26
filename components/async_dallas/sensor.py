@@ -44,6 +44,4 @@ async def to_code(config):
         cg.add(var.set_resolution(config[CONF_RESOLUTION]))
     
     cg.add(var.set_parent(hub))
-    
-    # 🔥 THE MISSING LINK - RE-ADDED! 🔥
     cg.add(hub.register_sensor(var))
