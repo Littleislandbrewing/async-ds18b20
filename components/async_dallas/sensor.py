@@ -1,6 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
+from esphome import pins
 from esphome.const import CONF_PIN, CONF_UPDATE_INTERVAL, CONF_ID
 
 # Namespace
@@ -12,10 +13,7 @@ CONFIG_SCHEMA = sensor.sensor_schema(
     unit_of_measurement="°C",
     accuracy_decimals=2,
 ).extend({
-    cv.Required(CONF_PIN): cv.gpio_pin,
-    # RIGID CHANGE: Default to 1s.
-    # Rationale: This component is for high-performance control loops.
-    # 1s is the fastest safe speed for 12-bit resolution.
+    cv.Required(CONF_PIN): cv.uint8_t,
     cv.Optional(CONF_UPDATE_INTERVAL, default="1s"): cv.update_interval,
 })
 
