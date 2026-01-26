@@ -1,7 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor
-from esphome import pins
 from esphome.const import CONF_PIN, CONF_UPDATE_INTERVAL, CONF_ID
 
 # Namespace
@@ -18,8 +17,8 @@ CONFIG_SCHEMA = sensor.sensor_schema(
 })
 
 async def to_code(config):
-    # Libraries
-    cg.add_library("OneWire", "2.3.7")
+    # Libraries - use newer versions compatible with ESP-IDF
+    cg.add_library("paulstoffregen/OneWire", "2.3.8")
     cg.add_library("milesburton/DallasTemperature", "3.11.0")
 
     var = cg.new_Pvariable(config[CONF_ID], config[CONF_PIN], config[CONF_UPDATE_INTERVAL])
