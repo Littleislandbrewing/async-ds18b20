@@ -12,6 +12,8 @@ static const char *TAG = "async_dallas";
 // ============================================================================
 
 void AsyncDallasComponent::setup() {
+  ESP_LOGE(TAG, "🔥🔥🔥 SETUP CALLED!!! 🔥🔥🔥");  // FIRST LINE - IMPOSSIBLE TO MISS
+  
   uint8_t pin_num = pin_->get_pin();
   ESP_LOGCONFIG(TAG, "Setting up Async Dallas Hub on Pin %u...", pin_num);
   
@@ -76,7 +78,7 @@ void AsyncDallasComponent::setup() {
   #if portNUM_PROCESSORS > 1
     res = xTaskCreatePinnedToCore(this->task_worker, "dallas_hub", 8192, this, 1, &task_handle_, 0);
   #else
-    res = xTaskCreate(this->task_worker, "dallas_hub", 8192, this, 1, &task_handle_);
+    res = xTaskCreate(this->task_worker, "dallas_w", 8192, this, 1, &task_handle_);
   #endif
 
   if (res != pdPASS) {
