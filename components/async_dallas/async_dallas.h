@@ -10,12 +10,11 @@
 namespace esphome {
 namespace async_dallas {
 
-class AsyncDallasSensor : public PollingComponent, public sensor::Sensor {
+class AsyncDallasSensor : public sensor::Sensor, public PollingComponent {
  public:
-  // Default Constructor (Required for "new_Pvariable" with no args)
-  AsyncDallasSensor() = default;
-
-  // Setter Method (Called by Python "cg.add(var.set_pin(...))")
+  // CRITICAL: Must initialize PollingComponent with default interval
+  AsyncDallasSensor() : PollingComponent(1000) {}
+  
   void set_pin(uint8_t pin) { pin_ = pin; }
 
   void setup() override;
