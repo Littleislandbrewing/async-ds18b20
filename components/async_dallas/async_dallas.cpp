@@ -8,11 +8,15 @@ namespace async_dallas {
 static const char *TAG = "async_dallas";
 
 void AsyncDallasSensor::setup() {
+  // FORCE log to appear
+  ESP_LOGE(TAG, "=== SETUP STARTING for Pin %u ===", pin_);
   ESP_LOGCONFIG(TAG, "Setting up Nuclear-Hard Dallas on Pin %u...", pin_);
   
   // ESP32-S3 GPIO initialization
   pinMode(pin_, INPUT_PULLUP);
   delay(50);
+  
+  ESP_LOGI(TAG, "GPIO %u configured as INPUT_PULLUP", pin_);
   
   // 1. ALLOCATE MEMORY
   one_wire_ = new (std::nothrow) OneWire(pin_);
@@ -22,6 +26,7 @@ void AsyncDallasSensor::setup() {
       return;
   }
 
+  ESP_LOGI(TAG, "OneWire allocated for pin %u", pin_);
   delay(100);
 
   sensors_ = new (std::nothrow) DallasTemperature(one_wire_);
@@ -31,14 +36,19 @@ void AsyncDallasSensor::setup() {
       return;
   }
 
+  ESP_LOGI(TAG, "DallasTemperature allocated for pin %u", pin_);
+
   // 2. INITIALIZE HARDWARE
   sensors_->begin();
+  ESP_LOGI(TAG, "sensors_->begin() called for pin %u", pin_);
   
   // 3. SET RESOLUTION
   sensors_->setResolution(12);
   sensors_->setWaitForConversion(false); 
 
   uint8_t current_res = sensors_->getResolution();
+  ESP_LOGI(TAG, "Resolution check: got %d-bit for pin %u", current_res, pin_);
+  
   if (current_res != 12) {
       ESP_LOGW(TAG, "SETUP WARNING: Sensor on Pin %u stuck at %d-bit! CHECK POWER.", pin_, current_res);
   } else {
@@ -47,6 +57,8 @@ void AsyncDallasSensor::setup() {
 
   // 4. VERIFY TOPOLOGY
   uint8_t device_count = sensors_->getDeviceCount();
+  ESP_LOGE(TAG, "=== Device count for pin %u: %d ===", pin_, device_count);
+  
   if (device_count == 0) {
       ESP_LOGW(TAG, "SETUP WARNING: No sensors found on Pin %u!", pin_);
   } else if (device_count > 1) {
@@ -84,6 +96,8 @@ void AsyncDallasSensor::setup() {
     ESP_LOGE(TAG, "FATAL: Worker Task creation failed.");
     this->mark_failed();
   }
+  
+  ESP_LOGE(TAG, "=== SETUP COMPLETE for Pin %u ===", pin_);
 }
 
 void AsyncDallasSensor::dump_config() {
@@ -190,6 +204,7 @@ void AsyncDallasSensor::loop() {
         publish_state(NAN); 
     } else {
         publish_state(new_val);
+        ESP_LOGI(TAG, "Pin %u: Published temperature: %.2f", pin_, new_val);
     }
     request_pending_ = false; 
   }
