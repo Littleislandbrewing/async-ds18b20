@@ -153,4 +153,64 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
             if (this_sensor->sensors_->getDS18Count() == 0) {
                  ESP_LOGD(TAG, "Pin %u Error: PHYSICAL DISCONNECT (No sensors found).", this_sensor->pin_);
             } else {
-                 ESP_LOGD(TAG, "Pin %u
+                 ESP_LOGD(TAG, "Pin %u Error: CRC/NOISE (Sensor present, data corrupted). Check 3.3V/Cable.", this_sensor->pin_);
+            }
+        } else {
+             // Brownout or Logic glitch
+             ESP_LOGD(TAG, "Pin %u Error: OUT OF RANGE. Value: %.2f", this_sensor->pin_, temp);
+        }
+
+    } else {
+        // SUCCESS: Clear errors
+        if (error_count > 0) {
+             ESP_LOGI(TAG, "Pin %u: Signal recovered after %d errors.", this_sensor->pin_, error_count);
+        }
+        error_count = 0;
+    }
+
+    // --- 4. DELIVERY ---
+    // If the component failed elsewhere, stop processing
+    if (this_sensor->is_failed()) {
+        vTaskDelete(NULL); 
+    }
+
+    if (just_reset) {
+        // Skip first reading after reset to allow settlement
+        just_reset = false; 
+    } else {
+        if (xSemaphoreTake(this_sensor->result_mutex_, portMAX_DELAY) == pdTRUE) {
+          this_sensor->latest_temp_ = temp;
+          xSemaphoreGive(this_sensor->result_mutex_);
+        }
+    }
+  }
+}
+
+void AsyncDallasSensor::loop() {
+  if (this->is_failed()) return;
+
+  float new_val = NAN;
+  bool received_data = false;
+  
+  if (result_mutex_ != NULL && xSemaphoreTake(result_mutex_, 0) == pdTRUE) { 
+    if (!isnan(latest_temp_)) {
+        new_val = latest_temp_;
+        latest_temp_ = NAN;
+        received_data = true;
+    }
+    xSemaphoreGive(result_mutex_);
+  }
+
+  if (received_data) {
+    if (new_val < -50 || new_val > 125) {
+        ESP_LOGW(TAG, "Invalid reading on Pin %u: %.2f", pin_, new_val);
+        publish_state(NAN); 
+    } else {
+        publish_state(new_val);
+    }
+    request_pending_ = false; 
+  }
+}
+
+} // namespace async_dallas
+} // namespace esphome
