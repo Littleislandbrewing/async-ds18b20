@@ -16,9 +16,9 @@ CONFIG_SCHEMA = sensor.sensor_schema(
 })
 
 async def to_code(config):
-    # Correct Git URL format for PlatformIO
-    cg.add_library(None, None, "https://github.com/mathieucarbou/OneWire.git")
-    cg.add_library(None, None, "https://github.com/mathieucarbou/Arduino-Temperature-Control-Library.git")
+    # Git URLs with names - PlatformIO format
+    cg.add_library("OneWire", None, "https://github.com/mathieucarbou/OneWire.git")
+    cg.add_library("DallasTemperature", None, "https://github.com/mathieucarbou/Arduino-Temperature-Control-Library.git")
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
