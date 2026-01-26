@@ -13,7 +13,7 @@ namespace async_dallas {
 
 class AsyncDallasSensor;  // Forward declaration
 
-class AsyncDallasComponent : public PollingComponent {
+class AsyncDallasComponent : public esphome::PollingComponent {  // ← FIXED!
  public:
   void set_pin(InternalGPIOPin *pin) { pin_ = pin; }
   
