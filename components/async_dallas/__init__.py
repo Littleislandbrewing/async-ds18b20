@@ -14,16 +14,13 @@ AsyncDallasComponent = async_dallas_ns.class_('AsyncDallasComponent', cg.Polling
 CONF_ASYNC_DALLAS_ID = "async_dallas_id"
 
 # Single hub config schema
-CONFIG_SCHEMA = cv.All(
-    cv.Schema({
-        cv.GenerateID(): cv.declare_id(AsyncDallasComponent),
-        cv.Required(CONF_PIN): pins.gpio_input_pin_schema,
-    }).extend(cv.polling_component_schema('1s')),
-    cv.only_with_arduino,
-)
+SINGLE_HUB_SCHEMA = cv.Schema({
+    cv.GenerateID(): cv.declare_id(AsyncDallasComponent),
+    cv.Required(CONF_PIN): pins.gpio_input_pin_schema,
+}).extend(cv.polling_component_schema('1s'))
 
 # Support multiple hubs via list
-CONFIG_SCHEMA = cv.All(cv.ensure_list(CONFIG_SCHEMA))
+CONFIG_SCHEMA = cv.All(cv.ensure_list(SINGLE_HUB_SCHEMA))
 
 async def to_code(config):
     for conf in config:
