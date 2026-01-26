@@ -13,12 +13,11 @@ namespace async_dallas {
 
 class AsyncDallasSensor;  // Forward declaration
 
-class AsyncDallasComponent : public esphome::PollingComponent {  // ← FIXED!
+class AsyncDallasComponent : public Component {
  public:
   void set_pin(InternalGPIOPin *pin) { pin_ = pin; }
   
   void setup() override;
-  void update() override;
   void loop() override;
   void dump_config() override;
   
@@ -35,10 +34,11 @@ class AsyncDallasComponent : public esphome::PollingComponent {  // ← FIXED!
   SemaphoreHandle_t result_mutex_ = nullptr;
   
   std::vector<AsyncDallasSensor *> sensors_list_;
-  std::map<uint64_t, float> temp_cache_;  // address -> temperature
+  std::map<uint64_t, float> temp_cache_;
   
   volatile bool request_pending_ = false;
   uint8_t error_count_ = 0;
+  uint32_t last_update_ = 0;
 };
 
 class AsyncDallasSensor : public sensor::Sensor {
