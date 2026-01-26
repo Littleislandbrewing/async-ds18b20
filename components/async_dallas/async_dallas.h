@@ -49,7 +49,7 @@ class AsyncDallasSensor : public sensor::Sensor {
   void set_resolution(uint8_t resolution) { resolution_ = resolution; }
   
   void update();
-  void dump_config() override;
+  void dump_config();
   
   uint64_t get_address() const { return address_; }
   uint8_t get_index() const { return index_; }
