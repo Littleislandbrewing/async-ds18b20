@@ -13,6 +13,10 @@ AsyncDallasSensor::AsyncDallasSensor(uint8_t pin, uint32_t interval)
 void AsyncDallasSensor::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Nuclear-Hard Dallas on Pin %u...", pin_);
   
+  // **FIX: Initialize GPIO pin for ESP32-S3**
+  pinMode(pin_, INPUT_PULLUP);  // Critical for ESP32-S3
+  delay(50);  // Give pin time to stabilize
+  
   // 1. ALLOCATE MEMORY (Boot Time Only)
   // We use std::nothrow to prevent 'abort' on OOM, allowing us to fail gracefully.
   one_wire_ = new (std::nothrow) OneWire(pin_);
@@ -21,6 +25,8 @@ void AsyncDallasSensor::setup() {
       this->mark_failed();
       return;
   }
+
+  delay(100);  // Give the bus time to stabilize
 
   sensors_ = new (std::nothrow) DallasTemperature(one_wire_);
   if (!sensors_) {
