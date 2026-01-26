@@ -1,72 +1,71 @@
-Async DS18B20 for ESPHome
-A High-Performance, Non-Blocking, Multi-Threaded Custom Component for ESP32.
+# Async DS18B20 for ESPHome
 
-Overview
-The standard dallas component in ESPHome is blocking. The DS18B20 sensor requires approximately 750ms to convert a temperature reading at 12-bit resolution. During this time, the standard component pauses the main loop to wait for the result or blocks interrupts to handle the 1-Wire timing.
+**A High-Performance, Non-Blocking, Multi-Threaded Custom Component for ESP32.**
 
-On a high-speed PLC or industrial controller, a 750ms lag is unacceptable. It causes:
+[![ESPHome](https://img.shields.io/badge/ESPHome-2024.12.0+-blue.svg)](https://esphome.io)
+[![Platform](https://img.shields.io/badge/Platform-ESP32-green.svg)](https://esphome.io)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Jitter in PID control loops.
+## Overview
 
-Delayed response to physical buttons and safety inputs.
+The standard `dallas` component in ESPHome is **blocking**. The DS18B20 sensor requires approximately 750ms to convert a temperature reading at 12-bit resolution. During this time, the standard component pauses the main loop to wait for the result or blocks interrupts to handle the 1-Wire timing.
 
-Network packet drops (WiFi/Ethernet latency).
-
-Watchdog warnings.
+**On a high-speed PLC or industrial controller, a 750ms lag is unacceptable.** It causes:
+* Jitter in PID control loops.
+* Delayed response to physical buttons and safety inputs.
+* Network packet drops (WiFi/Ethernet latency).
+* Watchdog warnings.
 
 This component solves this by offloading the sensor communication to a separate FreeRTOS task, leveraging the ESP32's multi-core architecture.
 
-Architecture
-Core 0 Offloading: Spawns a FreeRTOS Worker Task pinned strictly to Core 0 (the "Pro" core) on dual-core devices.
+## Architecture
 
-Zero-Impact Loop: The Main Loop (Core 1) sends a "Start" signal and immediately continues processing logic. It does not wait.
+1.  **Core 0 Offloading:** Spawns a FreeRTOS Worker Task pinned strictly to **Core 0** (the "Pro" core) on dual-core devices.
+2.  **Zero-Impact Loop:** The Main Loop (Core 1) sends a "Start" signal and immediately continues processing logic. It does *not* wait.
+3.  **Background Processing:** The worker task handles the heavy 1-Wire bit-banging and the 750ms conversion delay.
+4.  **Thread-Safe Delivery:** Data is passed back to Core 1 via a Mutex-protected semaphore.
 
-Background Processing: The worker task handles the heavy 1-Wire bit-banging and the 750ms conversion delay.
+**Performance Impact:** Loop time drops from **~140ms+** (spiking) to **<15ms** (flat), even while reading sensors at 1Hz.
 
-Thread-Safe Delivery: Data is passed back to Core 1 via a Mutex-protected semaphore.
-
-Performance Impact: Loop time drops from ~140ms+ (spiking) to <15ms (flat), even while reading sensors at 1Hz.
-
-Universal ESP32 Support
+### Universal ESP32 Support
 This component automatically detects chip architecture at runtime:
+* **Dual Core (ESP32-S3, WROOM):** Pins the worker to **Core 0** for maximum performance.
+* **Single Core (ESP32-C3, S2, Solo):** Spawns a standard unpinned task. While it cannot offload to a second core, it still uses FreeRTOS delays to prevent blocking the main loop during the conversion phase.
 
-Dual Core (ESP32-S3, WROOM): Pins the worker to Core 0 for maximum performance.
+## Installation
 
-Single Core (ESP32-C3, S2, Solo): Spawns a standard unpinned task. While it cannot offload to a second core, it still uses FreeRTOS delays to prevent blocking the main loop during the conversion phase.
-
-Installation
 Add the following to your ESPHome YAML configuration to pull the component directly from GitHub:
 
-YAML Code:
-
-YAML
+```yaml
 external_components:
   - source: github://Littleislandbrewing/async-ds18b20
     components: [ async_dallas ]
     refresh: 0s
+```
+    
+
 Configuration
-This component replaces the standard dallas platform. Note: It assumes a Bus Topology where you have one sensor per GPIO pin (common in industrial carrier boards). It reads Index 0 on the wire.
+This component replaces the standard dallas platform. Note: It assumes a Bus Topology where you have one sensor per GPIO pin (common in industrial carrier boards) so therefore DOES NOT need an address specification. 1 sensor per GPIO. It reads Index 0 on the wire.
 
-Basic Example
-YAML Code:
-
+Basic Example:
+```
 YAML
 sensor:
   - platform: async_dallas
     pin: 48
     name: "HLT Temp"
     update_interval: 1s  # Safe to run at high frequency
+```
+
 Configuration Variables
+
 pin (Required): The GPIO pin connected to the DS18B20 data line.
-
 name (Required): The name of the sensor in Home Assistant.
-
-update_interval (Optional): How often to poll the sensor. Default: 10s.
-
+update_interval (Optional): How often to poll the sensor. Default: 1s
 id (Optional): Manually set the ESPHome ID.
 
-Technical Safety Features
-This component is engineered for industrial reliability ("RIGID" protocol):
+Technical Safety Features:
+This component is engineered for industrial reliability with a caveat to do with timing: ("RIGID" protocol):
 
 Deadlock Prevention: The "Pending" flag is cleared even on sensor read errors, ensuring the loop never freezes waiting for a response that will never come.
 
