@@ -23,9 +23,9 @@ SINGLE_HUB_SCHEMA = cv.Schema({
 CONFIG_SCHEMA = cv.All(cv.ensure_list(SINGLE_HUB_SCHEMA))
 
 async def to_code(config):
-    # Add libraries FIRST, before any component registration
-    cg.add_library("OneWire", "2.3.8", "paulstoffregen")
-    cg.add_library("DallasTemperature", "3.11.0", "milesburton")
+    # Add libraries with the slash format that worked before
+    cg.add_library("paulstoffregen/OneWire", "2.3.8")
+    cg.add_library("milesburton/DallasTemperature", "3.11.0")
     
     for conf in config:
         var = cg.new_Pvariable(conf[CONF_ID])
