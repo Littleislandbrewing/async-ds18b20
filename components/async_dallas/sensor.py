@@ -17,9 +17,10 @@ CONFIG_SCHEMA = sensor.sensor_schema(
 })
 
 async def to_code(config):
-    # Use Mathieu Carbou's matched set to prevent library conflicts
+    # Use Mathieu Carbou's OneWire (ESP32 optimized)
+    # and standard DallasTemperature (it will use the OneWire we specify)
     cg.add_library("mathieucarbou/OneWire", "2.3.9")
-    cg.add_library("mathieucarbou/DallasTemperature", "3.11.0")
+    cg.add_library("milesburton/DallasTemperature", "3.11.0")
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
