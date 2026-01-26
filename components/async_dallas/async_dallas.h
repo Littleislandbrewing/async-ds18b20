@@ -12,7 +12,6 @@ namespace async_dallas {
 
 class AsyncDallasSensor : public sensor::Sensor, public PollingComponent {
  public:
-  // CRITICAL: Must initialize PollingComponent with default interval
   AsyncDallasSensor() : PollingComponent(1000) {}
   
   void set_pin(uint8_t pin) { pin_ = pin; }
