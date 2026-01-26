@@ -3,7 +3,7 @@ import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import CONF_PIN, CONF_UPDATE_INTERVAL, CONF_ID
 
-# Namespace Definition
+# Namespace
 async_dallas_ns = cg.esphome_ns.namespace('async_dallas')
 AsyncDallasSensor = async_dallas_ns.class_('AsyncDallasSensor', sensor.Sensor, cg.PollingComponent)
 
@@ -13,11 +13,14 @@ CONFIG_SCHEMA = sensor.sensor_schema(
     accuracy_decimals=2,
 ).extend({
     cv.Required(CONF_PIN): cv.gpio_pin,
-    cv.Optional(CONF_UPDATE_INTERVAL, default="10s"): cv.update_interval,
+    # RIGID CHANGE: Default to 1s.
+    # Rationale: This component is for high-performance control loops.
+    # 1s is the fastest safe speed for 12-bit resolution.
+    cv.Optional(CONF_UPDATE_INTERVAL, default="1s"): cv.update_interval,
 })
 
 async def to_code(config):
-    # RIGID: Force download of required dependencies
+    # Libraries
     cg.add_library("OneWire", "2.3.7")
     cg.add_library("milesburton/DallasTemperature", "3.11.0")
 
