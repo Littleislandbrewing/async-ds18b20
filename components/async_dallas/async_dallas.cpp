@@ -1,6 +1,6 @@
 #include "async_dallas.h"
 #include "esphome/core/log.h"
-#include <new> 
+#include <new>
 
 namespace esphome {
 namespace async_dallas {
@@ -10,15 +10,11 @@ static const char *TAG = "async_dallas";
 void AsyncDallasSensor::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Nuclear-Hard Dallas on Pin %u...", pin_);
   
-  // ---------------------------------------------------------
-  // THE "S3 FIX": Manual Pull-Up Injection
-  // ---------------------------------------------------------
-  // Force the pin HIGH immediately to prevent "Bus Short" detection.
-  pinMode(pin_, INPUT_PULLUP); 
-  delay(50); 
-  // ---------------------------------------------------------
-
-  // 1. ALLOCATE MEMORY (Boot Time Only)
+  // ESP32-S3 GPIO initialization
+  pinMode(pin_, INPUT_PULLUP);
+  delay(50);
+  
+  // 1. ALLOCATE MEMORY
   one_wire_ = new (std::nothrow) OneWire(pin_);
   if (!one_wire_) {
       ESP_LOGE(TAG, "FATAL: Heap Exhaustion (OneWire).");
@@ -26,8 +22,7 @@ void AsyncDallasSensor::setup() {
       return;
   }
 
-  // Double-tap reset
-  one_wire_->reset(); 
+  delay(100);
 
   sensors_ = new (std::nothrow) DallasTemperature(one_wire_);
   if (!sensors_) {
@@ -39,11 +34,10 @@ void AsyncDallasSensor::setup() {
   // 2. INITIALIZE HARDWARE
   sensors_->begin();
   
-  // 3. ENFORCE PHYSICS (12-bit)
+  // 3. SET RESOLUTION
   sensors_->setResolution(12);
   sensors_->setWaitForConversion(false); 
 
-  // CHECK: Did it stick?
   uint8_t current_res = sensors_->getResolution();
   if (current_res != 12) {
       ESP_LOGW(TAG, "SETUP WARNING: Sensor on Pin %u stuck at %d-bit! CHECK POWER.", pin_, current_res);
@@ -56,7 +50,7 @@ void AsyncDallasSensor::setup() {
   if (device_count == 0) {
       ESP_LOGW(TAG, "SETUP WARNING: No sensors found on Pin %u!", pin_);
   } else if (device_count > 1) {
-      ESP_LOGE(TAG, "FATAL: Multiple sensors (%d) on Pin %u!", device_count, pin_);
+      ESP_LOGE(TAG, "FATAL: Multiple sensors (%d) on Pin %u! This component requires 1 sensor per pin.", device_count, pin_);
       this->mark_failed();
       return;
   } else {
@@ -95,11 +89,13 @@ void AsyncDallasSensor::setup() {
 void AsyncDallasSensor::dump_config() {
   LOG_SENSOR("", "Async Dallas Sensor", this);
   ESP_LOGCONFIG(TAG, "  Pin: %u", pin_);
-  ESP_LOGCONFIG(TAG, "  Mode: Nuclear-Hard (S3 Fix + Git Libs)");
+  ESP_LOGCONFIG(TAG, "  Mode: Nuclear-Hard (Static Alloc + Forensics)");
 }
 
 void AsyncDallasSensor::update() {
-  if (this->is_failed() || task_handle_ == nullptr) return;
+  if (this->is_failed() || task_handle_ == nullptr) {
+      return;
+  }
 
   if (!request_pending_) {
     request_pending_ = true;
@@ -117,11 +113,10 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // --- 1. THE DOCTOR ---
+    // --- 1. THE DOCTOR: Safe Bus Recovery ---
     if (error_count >= MAX_ERRORS) {
         ESP_LOGW(TAG, "Pin %u: Bus Critical (10x Fail). Resetting Driver...", this_sensor->pin_);
         
-        pinMode(this_sensor->pin_, INPUT_PULLUP);
         this_sensor->sensors_->begin();
         this_sensor->sensors_->setResolution(12); 
         this_sensor->sensors_->setWaitForConversion(false);
@@ -130,30 +125,38 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
         just_reset = true;
     }
 
-    // --- 2. THE WORK ---
+    // --- 2. THE WORK (Async) ---
     this_sensor->sensors_->requestTemperatures();
+    
     vTaskDelay(750 / portTICK_PERIOD_MS); 
+    
     float temp = this_sensor->sensors_->getTempCByIndex(0);
 
-    // --- 3. FORENSICS ---
+    // --- 3. FORENSIC DIAGNOSTICS ---
     if (temp < -50 || temp > 125) { 
         error_count++;
+        
         if (temp <= -100) {
             if (this_sensor->sensors_->getDS18Count() == 0) {
-                 ESP_LOGD(TAG, "Pin %u Error: PHYSICAL DISCONNECT.", this_sensor->pin_);
+                 ESP_LOGD(TAG, "Pin %u Error: PHYSICAL DISCONNECT (No sensors found).", this_sensor->pin_);
             } else {
-                 ESP_LOGD(TAG, "Pin %u Error: CRC/NOISE.", this_sensor->pin_);
+                 ESP_LOGD(TAG, "Pin %u Error: CRC/NOISE (Sensor present, data corrupted). Check 3.3V/Cable.", this_sensor->pin_);
             }
         } else {
-             ESP_LOGD(TAG, "Pin %u Error: OUT OF RANGE. Val: %.2f", this_sensor->pin_, temp);
+             ESP_LOGD(TAG, "Pin %u Error: OUT OF RANGE. Value: %.2f", this_sensor->pin_, temp);
         }
+
     } else {
-        if (error_count > 0) ESP_LOGI(TAG, "Pin %u: Signal recovered.", this_sensor->pin_);
+        if (error_count > 0) {
+             ESP_LOGI(TAG, "Pin %u: Signal recovered after %d errors.", this_sensor->pin_, error_count);
+        }
         error_count = 0;
     }
 
     // --- 4. DELIVERY ---
-    if (this_sensor->is_failed()) vTaskDelete(NULL);
+    if (this_sensor->is_failed()) {
+        vTaskDelete(NULL); 
+    }
 
     if (just_reset) {
         just_reset = false; 
