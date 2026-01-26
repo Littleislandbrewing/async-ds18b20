@@ -10,12 +10,11 @@
 namespace esphome {
 namespace async_dallas {
 
-class AsyncDallasSensor : public PollingComponent, public sensor::Sensor {
+class AsyncDallasSensor : public sensor::Sensor, public PollingComponent {
  public:
-  AsyncDallasSensor(uint8_t pin, uint32_t interval);
-
-  // NOTE: Destructors are rarely called in ESPHome lifecycle.
-  // We rely on "Fail-Closed" logic instead of cleanup.
+  AsyncDallasSensor() : PollingComponent(1000) {}  // Default 1 second
+  
+  void set_pin(uint8_t pin) { pin_ = pin; }
 
   void setup() override;
   void update() override;
