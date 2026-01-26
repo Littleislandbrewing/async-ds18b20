@@ -12,7 +12,7 @@ namespace async_dallas {
 
 class AsyncDallasSensor : public sensor::Sensor, public PollingComponent {
  public:
-  AsyncDallasSensor() : PollingComponent(1000) {}
+  AsyncDallasSensor() : PollingComponent() {}
   
   void set_pin(uint8_t pin) { pin_ = pin; }
 
