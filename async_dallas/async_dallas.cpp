@@ -13,8 +13,8 @@ AsyncDallasSensor::AsyncDallasSensor(uint8_t pin, uint32_t interval)
 void AsyncDallasSensor::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Nuclear-Hard Dallas on Pin %u...", pin_);
   
-  // 1. ALLOCATE ONCE (Boot Time Only)
-  // We use std::nothrow to prevent 'abort' on OOM, allowing us to handle it safely.
+  // 1. ALLOCATE MEMORY (Boot Time Only)
+  // We use std::nothrow to prevent 'abort' on OOM, allowing us to fail gracefully.
   one_wire_ = new (std::nothrow) OneWire(pin_);
   if (!one_wire_) {
       ESP_LOGE(TAG, "FATAL: Heap Exhaustion (OneWire).");
@@ -32,20 +32,39 @@ void AsyncDallasSensor::setup() {
   // 2. INITIALIZE HARDWARE
   sensors_->begin();
   
-  // 3. ENFORCE PHYSICS (The "Grounding" Rule)
-  // We explicitly set 12-bit resolution so our 750ms delay is physically correct.
+  // 3. ENFORCE PHYSICS (The 3.3V "Paranoia Check")
+  // We explicitly set 12-bit resolution so our 750ms delay is correct.
   sensors_->setResolution(12);
   sensors_->setWaitForConversion(false); 
 
+  // CHECK: Did the resolution setting actually stick?
+  // If voltage is marginal (3.3V), the write command might fail.
+  uint8_t current_res = sensors_->getResolution();
+  if (current_res != 12) {
+      ESP_LOGW(TAG, "SETUP WARNING: Sensor on Pin %u stuck at %d-bit! (Expected 12-bit). CHECK POWER.", pin_, current_res);
+  } else {
+      ESP_LOGI(TAG, "Pin %u: Configured for 12-bit resolution.", pin_);
+  }
+
   // 4. VERIFY TOPOLOGY
   // Determinism check: If >1 sensor exists, Index(0) is risky.
-  if (sensors_->getDeviceCount() > 1) {
-      ESP_LOGE(TAG, "FATAL: Multiple sensors on Pin %u! This component requires 1 sensor per pin.", pin_);
+  uint8_t device_count = sensors_->getDeviceCount();
+  if (device_count == 0) {
+      ESP_LOGW(TAG, "SETUP WARNING: No sensors found on Pin %u!", pin_);
+  } else if (device_count > 1) {
+      ESP_LOGE(TAG, "FATAL: Multiple sensors (%d) on Pin %u! This component requires 1 sensor per pin.", device_count, pin_);
       this->mark_failed();
       return;
-  }
-  if (sensors_->getDeviceCount() == 0) {
-      ESP_LOGW(TAG, "Warning: No sensor detected on Pin %u.", pin_);
+  } else {
+      // LOG ADDRESS (Proof of Life)
+      DeviceAddress device_addr;
+      if (sensors_->getAddress(device_addr, 0)) {
+          char addr_str[24];
+          snprintf(addr_str, sizeof(addr_str), "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+              device_addr[0], device_addr[1], device_addr[2], device_addr[3],
+              device_addr[4], device_addr[5], device_addr[6], device_addr[7]);
+          ESP_LOGI(TAG, "Found Sensor on Pin %u. Address: %s", pin_, addr_str);
+      }
   }
 
   // 5. SAFE THREADING
@@ -57,7 +76,7 @@ void AsyncDallasSensor::setup() {
   }
 
   BaseType_t res;
-  // 8192 Bytes stack (Safe margin for logging overhead)
+  // 8192 Bytes stack (Safe margin for extensive logging overhead)
   #if portNUM_PROCESSORS > 1
       res = xTaskCreatePinnedToCore(this->task_worker, "dallas_0", 8192, this, 1, &task_handle_, 0);
   #else
@@ -73,11 +92,11 @@ void AsyncDallasSensor::setup() {
 void AsyncDallasSensor::dump_config() {
   LOG_SENSOR("", "Async Dallas Sensor", this);
   ESP_LOGCONFIG(TAG, "  Pin: %u", pin_);
-  ESP_LOGCONFIG(TAG, "  Mode: Nuclear-Hard (Static Allocation)");
+  ESP_LOGCONFIG(TAG, "  Mode: Nuclear-Hard (Static Alloc + Forensics)");
 }
 
 void AsyncDallasSensor::update() {
-  // AUDIT FIX: Guard against accessing a dead task
+  // Guard against accessing a dead task or failed component
   if (this->is_failed() || task_handle_ == nullptr) {
       return;
   }
@@ -100,12 +119,12 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
 
     // --- 1. THE DOCTOR: Safe Bus Recovery ---
     if (error_count >= MAX_ERRORS) {
-        ESP_LOGW(TAG, "Pin %u: Bus unstable (10x Fail). Re-syncing...", this_sensor->pin_);
+        ESP_LOGW(TAG, "Pin %u: Bus Critical (10x Fail). Resetting Driver...", this_sensor->pin_);
         
-        // AUDIT FIX: No 'delete/new'. We re-use the existing memory.
+        // Soft Re-Init (Safe - No Deletion)
         // Calling begin() forces the library to re-scan the bus and reset the state machine.
         this_sensor->sensors_->begin();
-        this_sensor->sensors_->setResolution(12); // Enforce resolution again
+        this_sensor->sensors_->setResolution(12); 
         this_sensor->sensors_->setWaitForConversion(false);
         
         error_count = 0;
@@ -115,20 +134,33 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
     // --- 2. THE WORK (Async) ---
     this_sensor->sensors_->requestTemperatures();
     
-    // AUDIT FIX: 750ms matches our forced 12-bit resolution
+    // 750ms matches our forced 12-bit resolution
     vTaskDelay(750 / portTICK_PERIOD_MS); 
     
     float temp = this_sensor->sensors_->getTempCByIndex(0);
 
-    // --- 3. HEALTH CHECK ---
-    // Range: -55 to +125 is valid.
-    // -127 is Disconnect.
-    // We allow 85.0 (Brewing Valid), but catch true hardware failures.
+    // --- 3. FORENSIC DIAGNOSTICS ---
+    // Range: -50 to +125 is valid (Allows 85.0 for Brewing).
     if (temp < -50 || temp > 125) { 
         error_count++;
+        
+        // DIAGNOSTIC: Why did it fail?
+        if (temp <= -100) {
+            // "Ping Test": Is the sensor physically gone?
+            if (this_sensor->sensors_->getDS18Count() == 0) {
+                 ESP_LOGD(TAG, "Pin %u Error: PHYSICAL DISCONNECT (No sensors found).", this_sensor->pin_);
+            } else {
+                 ESP_LOGD(TAG, "Pin %u Error: CRC/NOISE (Sensor present, data corrupted). Check 3.3V/Cable.", this_sensor->pin_);
+            }
+        } else {
+             // Brownout or Logic glitch
+             ESP_LOGD(TAG, "Pin %u Error: OUT OF RANGE. Value: %.2f", this_sensor->pin_, temp);
+        }
+
     } else {
+        // SUCCESS: Clear errors
         if (error_count > 0) {
-             ESP_LOGI(TAG, "Pin %u: Signal recovered.", this_sensor->pin_);
+             ESP_LOGI(TAG, "Pin %u: Signal recovered after %d errors.", this_sensor->pin_, error_count);
         }
         error_count = 0;
     }
@@ -136,10 +168,11 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
     // --- 4. DELIVERY ---
     // If the component failed elsewhere, stop processing
     if (this_sensor->is_failed()) {
-        vTaskDelete(NULL); // Only suicide if the parent object is dead
+        vTaskDelete(NULL); 
     }
 
     if (just_reset) {
+        // Skip first reading after reset to allow settlement
         just_reset = false; 
     } else {
         if (xSemaphoreTake(this_sensor->result_mutex_, portMAX_DELAY) == pdTRUE) {
@@ -151,7 +184,6 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
 }
 
 void AsyncDallasSensor::loop() {
-  // AUDIT FIX: Don't run if failed
   if (this->is_failed()) return;
 
   float new_val = NAN;
