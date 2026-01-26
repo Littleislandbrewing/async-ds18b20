@@ -16,9 +16,9 @@ CONFIG_SCHEMA = sensor.sensor_schema(
 })
 
 async def to_code(config):
-    # Git URLs with names - PlatformIO format
-    cg.add_library("OneWire", None, "https://github.com/mathieucarbou/OneWire.git")
-    cg.add_library("DallasTemperature", None, "https://github.com/mathieucarbou/Arduino-Temperature-Control-Library.git")
+    # Use paulstoffregen's versions - they're stable and in the registry
+    cg.add_library("paulstoffregen/OneWire", "2.3.8")
+    cg.add_library("milesburton/DallasTemperature", "3.11.0")
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
