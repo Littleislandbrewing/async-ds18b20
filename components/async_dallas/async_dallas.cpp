@@ -12,7 +12,13 @@ static const char *TAG = "async_dallas";
 // ============================================================================
 
 void AsyncDallasComponent::setup() {
-  ESP_LOGE(TAG, "🔥🔥🔥 SETUP CALLED!!! 🔥🔥🔥");  // FIRST LINE - IMPOSSIBLE TO MISS
+  // Give USB Serial time to connect before we do anything
+  delay(2000);
+  
+  ESP_LOGE(TAG, "🔥🔥🔥 SETUP CALLED!!! 🔥🔥🔥");
+  
+  // Allow ESPHome to do its internal pin bookkeeping
+  pin_->setup();
   
   uint8_t pin_num = pin_->get_pin();
   ESP_LOGCONFIG(TAG, "Setting up Async Dallas Hub on Pin %u...", pin_num);
