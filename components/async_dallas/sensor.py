@@ -3,6 +3,7 @@ import esphome.config_validation as cv
 from esphome.components import sensor
 from esphome.const import (
     CONF_ADDRESS,
+    CONF_ID,
     CONF_INDEX,
     CONF_RESOLUTION,
     DEVICE_CLASS_TEMPERATURE,
