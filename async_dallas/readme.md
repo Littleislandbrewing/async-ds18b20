@@ -71,12 +71,12 @@ sensor:
 ```
 
 Configuration Variables
-
+```
 pin (Required): The GPIO pin connected to the DS18B20 data line.
 name (Required): The name of the sensor in Home Assistant.
 update_interval (Optional): How often to poll the sensor. Default: 1s
 id (Optional): Manually set the ESPHome ID.
-
+```
 Technical Safety Features:
 This component is engineered for industrial reliability with a caveat to do with timing: ("RIGID" protocol):
 
