@@ -18,19 +18,25 @@ The standard `dallas` component in ESPHome is **blocking**. The DS18B20 sensor r
 
 This component solves this by offloading the sensor communication to a separate FreeRTOS task, leveraging the ESP32's multi-core architecture.
 
-## Architecture
+## Architecture (Nuclear-Hard)
 
-1.  **Core 0 Offloading:** Spawns a FreeRTOS Worker Task pinned strictly to **Core 0** (the "Pro" core) on dual-core devices.
-2.  **Zero-Impact Loop:** The Main Loop (Core 1) sends a "Start" signal and immediately continues processing logic. It does *not* wait.
-3.  **Background Processing:** The worker task handles the heavy 1-Wire bit-banging and the 750ms conversion delay.
-4.  **Thread-Safe Delivery:** Data is passed back to Core 1 via a Mutex-protected semaphore.
+This component is engineered for **Industrial Reliability** ("RIGID" Protocol). It avoids common embedded pitfalls like heap fragmentation and race conditions.
+
+1.  **Core 0 Offloading:** Spawns a FreeRTOS Worker Task pinned strictly to **Core 0** (the "Pro" core) on dual-core devices. Core 1 (Main Loop) is left 100% free for logic.
+2.  **Static Allocation:** All memory objects are allocated **once** at boot. The component strictly forbids dynamic `delete`/`new` cycling during runtime to prevent Heap Fragmentation.
+3.  **Thread-Safe Delivery:** Data is passed back to Core 1 via a Mutex-protected semaphore.
+4.  **Physics Enforcement:** The component explicitly forces the sensor to **12-bit resolution** to ensure the 750ms async delay matches the hardware reality.
 
 **Performance Impact:** Loop time drops from **~140ms+** (spiking) to **<15ms** (flat), even while reading sensors at 1Hz.
 
-### Universal ESP32 Support
-This component automatically detects chip architecture at runtime:
-* **Dual Core (ESP32-S3, WROOM):** Pins the worker to **Core 0** for maximum performance.
-* **Single Core (ESP32-C3, S2, Solo):** Spawns a standard unpinned task. While it cannot offload to a second core, it still uses FreeRTOS delays to prevent blocking the main loop during the conversion phase.
+## "The Bus Doctor" (Self-Healing Logic)
+
+In industrial environments (like breweries), heavy loads (VFDs, Solenoids) can introduce EMI spikes that cause the DS18B20 to **"Latch Up"** (freeze) or the software driver to desync.
+
+This component includes a **Bus Doctor** routine:
+1.  **Debounce Filter:** It tolerates up to **10 consecutive failures** (10 seconds) to filter out transient noise storms (e.g., a VFD ramping up).
+2.  **Surgical Reset:** If errors persist beyond 10 seconds, it triggers a **Soft Re-Sync**. It forces the 1-Wire library to re-scan the bus and reset its internal state machine *without* destroying memory objects.
+3.  **Brewery Safe (85°C Rule):** Unlike standard drivers, this component **DOES NOT** treat `85.0°C` (Power-On Reset value) as an error. In brewing, 85°C is a valid temperature (Sparge/Mash-out). We trust the reading to prevent automation failure at critical process steps.
 
 ## Installation
 
@@ -42,7 +48,14 @@ external_components:
     components: [ async_dallas ]
     refresh: 0s
 ```
-    
+**Performance Impact:** Loop time drops from **~140ms+** (spiking) to **<15ms** (flat), even while reading sensors at 1Hz.
+
+### Universal ESP32 Support
+This component automatically detects chip architecture at runtime BUT is not really supported for single core ESP32 chips:
+* **Dual Core (ESP32-S3, WROOM):** Pins the worker to **Core 0** for maximum performance.
+* **Single Core (ESP32-C3, S2, Solo):** Spawns a standard unpinned task. While it cannot offload to a second core, it still uses FreeRTOS delays to prevent blocking the main loop during the conversion phase.
+
+  
 
 Configuration
 This component replaces the standard dallas platform. Note: It assumes a Bus Topology where you have one sensor per GPIO pin (common in industrial carrier boards) so therefore DOES NOT need an address specification. 1 sensor per GPIO. It reads Index 0 on the wire.
@@ -74,6 +87,8 @@ NaN Safety: If the sensor is disconnected (reads -127), the component publishes 
 Watchdog Compliance: Uses vTaskDelay to yield to the OS during conversion, preventing Task Watchdog (TWDT) resets.
 
 Thread Safety: Uses Mutex locks (xSemaphoreTake) to prevent race conditions during data handover between cores.
+
+One more note that is SUPER important. - THIS CODE IS NOT PROVIDED AS ANYTHING MORE THAN AN ALPHA RELEASE. TEST EVERYTHING. IT IS SPECIFIC TO MY SETUP AND MAY NOT BE APPLICABLE TO YOURS. I PROVIDE NO WARRANTY OR GUARANTEE OF HOW IT WORKS FOR YOU.... IT IS TOTALLY YOUR RESPONSIBILITY TO DO YOUR OWN DUE DILLIGENCE AND TESTING.
 
 License
 MIT License. Free to use for personal or commercial projects.
