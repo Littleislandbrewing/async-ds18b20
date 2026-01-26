@@ -1,5 +1,6 @@
 #include "async_dallas.h"
 #include "esphome/core/log.h"
+#include <new> // Required for std::nothrow
 
 namespace esphome {
 namespace async_dallas {
@@ -10,50 +11,61 @@ AsyncDallasSensor::AsyncDallasSensor(uint8_t pin, uint32_t interval)
     : PollingComponent(interval), pin_(pin) {}
 
 void AsyncDallasSensor::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Async Dallas on Pin %u...", pin_);
+  ESP_LOGCONFIG(TAG, "Setting up Nuclear-Hard Dallas on Pin %u...", pin_);
   
-  // FIX #4: Safe Allocation
-  one_wire_ = new OneWire(pin_);
+  // 1. ALLOCATE ONCE (Boot Time Only)
+  // We use std::nothrow to prevent 'abort' on OOM, allowing us to handle it safely.
+  one_wire_ = new (std::nothrow) OneWire(pin_);
   if (!one_wire_) {
-      ESP_LOGE(TAG, "FATAL: Failed to allocate OneWire!");
+      ESP_LOGE(TAG, "FATAL: Heap Exhaustion (OneWire).");
       this->mark_failed();
       return;
   }
 
-  sensors_ = new DallasTemperature(one_wire_);
+  sensors_ = new (std::nothrow) DallasTemperature(one_wire_);
   if (!sensors_) {
-      ESP_LOGE(TAG, "FATAL: Failed to allocate DallasTemperature!");
+      ESP_LOGE(TAG, "FATAL: Heap Exhaustion (DallasTemp).");
       this->mark_failed();
       return;
   }
 
+  // 2. INITIALIZE HARDWARE
   sensors_->begin();
-  if (sensors_->getDeviceCount() == 0) {
-      ESP_LOGW(TAG, "No DS18B20 sensors found on Pin %u!", pin_);
-  }
   
+  // 3. ENFORCE PHYSICS (The "Grounding" Rule)
+  // We explicitly set 12-bit resolution so our 750ms delay is physically correct.
+  sensors_->setResolution(12);
   sensors_->setWaitForConversion(false); 
 
-  // FIX #1: NULL Mutex Check
+  // 4. VERIFY TOPOLOGY
+  // Determinism check: If >1 sensor exists, Index(0) is risky.
+  if (sensors_->getDeviceCount() > 1) {
+      ESP_LOGE(TAG, "FATAL: Multiple sensors on Pin %u! This component requires 1 sensor per pin.", pin_);
+      this->mark_failed();
+      return;
+  }
+  if (sensors_->getDeviceCount() == 0) {
+      ESP_LOGW(TAG, "Warning: No sensor detected on Pin %u.", pin_);
+  }
+
+  // 5. SAFE THREADING
   result_mutex_ = xSemaphoreCreateMutex();
   if (result_mutex_ == NULL) {
-      ESP_LOGE(TAG, "CRITICAL: Failed to create mutex!");
+      ESP_LOGE(TAG, "FATAL: Mutex creation failed.");
       this->mark_failed();
       return;
   }
 
   BaseType_t res;
-  // FIX #3: Stack Overflow Risk -> Increased to 8192 (8KB)
+  // 8192 Bytes stack (Safe margin for logging overhead)
   #if portNUM_PROCESSORS > 1
-      ESP_LOGI(TAG, "Dual Core detected. Pinning worker to Core 0.");
       res = xTaskCreatePinnedToCore(this->task_worker, "dallas_0", 8192, this, 1, &task_handle_, 0);
   #else
-      ESP_LOGI(TAG, "Single Core detected. Spawning unpinned worker.");
       res = xTaskCreate(this->task_worker, "dallas_w", 8192, this, 1, &task_handle_);
   #endif
 
   if (res != pdPASS) {
-    ESP_LOGE(TAG, "CRITICAL FAILURE: Could not spawn worker task!");
+    ESP_LOGE(TAG, "FATAL: Worker Task creation failed.");
     this->mark_failed();
   }
 }
@@ -61,10 +73,15 @@ void AsyncDallasSensor::setup() {
 void AsyncDallasSensor::dump_config() {
   LOG_SENSOR("", "Async Dallas Sensor", this);
   ESP_LOGCONFIG(TAG, "  Pin: %u", pin_);
-  ESP_LOGCONFIG(TAG, "  Update Interval: %.1fs", this->get_update_interval() / 1000.0f);
+  ESP_LOGCONFIG(TAG, "  Mode: Nuclear-Hard (Static Allocation)");
 }
 
 void AsyncDallasSensor::update() {
+  // AUDIT FIX: Guard against accessing a dead task
+  if (this->is_failed() || task_handle_ == nullptr) {
+      return;
+  }
+
   if (!request_pending_) {
     request_pending_ = true;
     xTaskNotifyGive(task_handle_);
@@ -81,51 +98,33 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // --- 1. THE DOCTOR: Bus Recovery Logic ---
+    // --- 1. THE DOCTOR: Safe Bus Recovery ---
     if (error_count >= MAX_ERRORS) {
-        ESP_LOGW(TAG, "Pin %u: Bus Latch-Up (10x Fail). Resetting Driver...", this_sensor->pin_);
+        ESP_LOGW(TAG, "Pin %u: Bus unstable (10x Fail). Re-syncing...", this_sensor->pin_);
         
-        // FIX #2: Removed Unsafe GPIO Manipulation (pinMode/digitalWrite).
-        // We rely on destroying and re-creating the library objects. 
-        // The OneWire constructor handles the physical bus reset safely.
-
-        // Safe Teardown
-        if (this_sensor->sensors_) { delete this_sensor->sensors_; this_sensor->sensors_ = nullptr; }
-        if (this_sensor->one_wire_) { delete this_sensor->one_wire_; this_sensor->one_wire_ = nullptr; }
-        
-        // Brief pause to let electrical transients settle
-        vTaskDelay(20 / portTICK_PERIOD_MS);
-        
-        // FIX #4: Safe Re-allocation
-        this_sensor->one_wire_ = new OneWire(this_sensor->pin_);
-        if (!this_sensor->one_wire_) {
-            ESP_LOGE(TAG, "FATAL: Heap exhaustion during reset!");
-            vTaskDelete(NULL); // Suicide to prevent crash
-        }
-
-        this_sensor->sensors_ = new DallasTemperature(this_sensor->one_wire_);
-        if (!this_sensor->sensors_) {
-             ESP_LOGE(TAG, "FATAL: Heap exhaustion during reset!");
-             vTaskDelete(NULL);
-        }
-
-        this_sensor->sensors_->begin(); // This performs the Reset Pulse safely
+        // AUDIT FIX: No 'delete/new'. We re-use the existing memory.
+        // Calling begin() forces the library to re-scan the bus and reset the state machine.
+        this_sensor->sensors_->begin();
+        this_sensor->sensors_->setResolution(12); // Enforce resolution again
         this_sensor->sensors_->setWaitForConversion(false);
         
         error_count = 0;
         just_reset = true;
     }
 
-    // --- 2. THE WORK ---
+    // --- 2. THE WORK (Async) ---
     this_sensor->sensors_->requestTemperatures();
+    
+    // AUDIT FIX: 750ms matches our forced 12-bit resolution
     vTaskDelay(750 / portTICK_PERIOD_MS); 
+    
     float temp = this_sensor->sensors_->getTempCByIndex(0);
 
     // --- 3. HEALTH CHECK ---
-    // FIX #6 & #7: Standardized Thresholds (-55 to +125 is valid range)
-    // -127 is Disconnect, 85 is Power-On (Valid for Brewing).
-    // We strictly catch -127 or clearly impossible negative values.
-    if (temp < -50 || temp > 150) { 
+    // Range: -55 to +125 is valid.
+    // -127 is Disconnect.
+    // We allow 85.0 (Brewing Valid), but catch true hardware failures.
+    if (temp < -50 || temp > 125) { 
         error_count++;
     } else {
         if (error_count > 0) {
@@ -135,21 +134,26 @@ void AsyncDallasSensor::task_worker(void *pvParameters) {
     }
 
     // --- 4. DELIVERY ---
+    // If the component failed elsewhere, stop processing
+    if (this_sensor->is_failed()) {
+        vTaskDelete(NULL); // Only suicide if the parent object is dead
+    }
+
     if (just_reset) {
         just_reset = false; 
     } else {
-        // FIX #1: The mutex was checked at setup, but we check here for sanity
-        if (this_sensor->result_mutex_ != NULL) {
-            if (xSemaphoreTake(this_sensor->result_mutex_, portMAX_DELAY) == pdTRUE) {
-              this_sensor->latest_temp_ = temp;
-              xSemaphoreGive(this_sensor->result_mutex_);
-            }
+        if (xSemaphoreTake(this_sensor->result_mutex_, portMAX_DELAY) == pdTRUE) {
+          this_sensor->latest_temp_ = temp;
+          xSemaphoreGive(this_sensor->result_mutex_);
         }
     }
   }
 }
 
 void AsyncDallasSensor::loop() {
+  // AUDIT FIX: Don't run if failed
+  if (this->is_failed()) return;
+
   float new_val = NAN;
   bool received_data = false;
   
@@ -163,8 +167,7 @@ void AsyncDallasSensor::loop() {
   }
 
   if (received_data) {
-    // FIX #7: Consistent Validation in Loop
-    if (new_val < -50 || new_val > 150) {
+    if (new_val < -50 || new_val > 125) {
         ESP_LOGW(TAG, "Invalid reading on Pin %u: %.2f", pin_, new_val);
         publish_state(NAN); 
     } else {
