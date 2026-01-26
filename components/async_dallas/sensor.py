@@ -16,7 +16,7 @@ CONFIG_SCHEMA = sensor.sensor_schema(
 })
 
 async def to_code(config):
-    # Use paulstoffregen's versions - they're stable and in the registry
+    # Use Paul Stoffregen's stable libraries from PlatformIO registry
     cg.add_library("paulstoffregen/OneWire", "2.3.8")
     cg.add_library("milesburton/DallasTemperature", "3.11.0")
 
