@@ -23,7 +23,7 @@ void OneWireBus::begin() {
   gpio_config_t cfg = {};
   cfg.pin_bit_mask = (1ULL << pin_);
   cfg.mode         = GPIO_MODE_INPUT;
-  cfg.pull_up_en   = GPIO_PULLUP_DISABLE;
+  cfg.pull_up_en   = GPIO_PULLUP_ENABLE;   // internal pull-up as fallback if no external
   cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
   cfg.intr_type    = GPIO_INTR_DISABLE;
   gpio_config(&cfg);
@@ -39,6 +39,7 @@ bool OneWireBus::reset() {
   uint8_t presence = !read_pin();
   portENABLE_INTERRUPTS();
   ets_delay_us(410);
+  ESP_LOGD(TAG, "Bus reset: presence=%d", presence);
   return presence;
 }
 
@@ -150,6 +151,7 @@ static uint8_t discover_devices(OneWireBus *bus,
   bus->reset_search();
   uint8_t addr[8];
   uint8_t index = 0;
+  ESP_LOGD(TAG, "Starting device discovery...");
 
   while (bus->search(addr)) {
     if (OneWireBus::crc8(addr, 7) != addr[7]) {
@@ -214,7 +216,7 @@ void AsyncDallasComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Async Dallas Hub:");
   ESP_LOGCONFIG(TAG, "  Pin: GPIO%d", pin_->get_pin());
   ESP_LOGCONFIG(TAG, "  Sensors: %d", sensors_list_.size());
-  ESP_LOGCONFIG(TAG, "  Update Interval: %dms", update_interval_ms_);
+  ESP_LOGCONFIG(TAG, "  Update Interval: %lums", update_interval_ms_);
 }
 
 void AsyncDallasComponent::register_sensor(AsyncDallasSensor *sensor) {
